@@ -1,0 +1,572 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Description: "CloudFormation template to set up VPC, Subnets, NAT Gateway, and Internal Load Balancer."
+
+Resources:
+  # VPC
+  VPC:
+    Type: "AWS::EC2::VPC"
+    Properties:
+      CidrBlock: "10.0.0.0/16"
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: "Name"
+          Value: "appVPC"
+
+  # Internet Gateway
+  InternetGateway:
+    Type: "AWS::EC2::InternetGateway"
+    Properties:
+      Tags:
+        - Key: "Name"
+          Value: "InternetGateway"
+  
+  # Attach Internet Gateway to VPC
+  AttachGateway:
+    Type: "AWS::EC2::VPCGatewayAttachment"
+    Properties:
+      VpcId: !Ref VPC
+      InternetGatewayId: !Ref InternetGateway
+
+  # Public Subnet
+  PublicSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: "10.0.1.0/24"
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: "Name"
+          Value: "PublicSubnet"
+
+  # Private Subnet
+  PrivateSubnet:
+    Type: "AWS::EC2::Subnet"
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: "10.0.2.0/24"
+      AvailabilityZone: !Select [0, !GetAZs ""]
+      Tags:
+        - Key: "Name"
+          Value: "PrivateSubnet"
+
+  # Route Table for Public Subnet
+  PublicRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: "Name"
+          Value: "PublicRouteTable"
+  
+  # Route Table for Public Subnet
+  PublicRoute:
+    Type: "AWS::EC2::Route"
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      GatewayId: !Ref InternetGateway
+
+  # Associate Public Subnet with Route Table
+  PublicSubnetRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PublicSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  # NAT Gateway
+  NatEIP:
+    Type: "AWS::EC2::EIP"
+    Properties:
+      Domain: "vpc"
+
+  # NAT Gateway
+  NatGateway:
+    Type: "AWS::EC2::NatGateway"
+    Properties:
+      AllocationId: !GetAtt NatEIP.AllocationId
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: "Name"
+          Value: "natGateway"
+
+  # Route Table for Private Subnet
+  PrivateRouteTable:
+    Type: "AWS::EC2::RouteTable"
+    Properties:
+      VpcId: !Ref VPC
+      Tags:
+        - Key: "Name"
+          Value: "PrivateRouteTable"
+
+  # Route Table for Private Subnet
+  PrivateRoute:
+    Type: "AWS::EC2::Route"
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: "0.0.0.0/0"
+      NatGatewayId: !Ref NatGateway
+
+  # Associate Private Subnet with Route Table
+  PrivateSubnetRouteTableAssociation:
+    Type: "AWS::EC2::SubnetRouteTableAssociation"
+    Properties:
+      SubnetId: !Ref PrivateSubnet
+      RouteTableId: !Ref PrivateRouteTable
+
+  # Internal Load Balancer (Private)
+  LoadBalancer:
+    Type: "AWS::ElasticLoadBalancingV2::LoadBalancer"
+    Properties:
+      Name: "internalLoadBalancer"
+      Subnets:
+        - !Ref PrivateSubnet
+      Scheme: "internal"
+      LoadBalancerAttributes:
+        - Key: "deletion_protection.enabled"
+          Value: "false"
+      SecurityGroups:
+        - !Ref LoadBalancerSecurityGroup
+      Type: "network"
+      IpAddressType: "ipv4"
+      EnforceSecurityGroupInboundRulesOnPrivateLinkTraffic: "off"
+      Tags:
+        - Key: "Name"
+          Value: "internalLoadBalancer"
+
+  # Security Group for Load Balancer
+  LoadBalancerSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Allow inbound traffic to Load Balancer"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt ApiGatewaySecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !GetAtt ApiGatewaySecurityGroup.GroupId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: "0.0.0.0/0"
+      Tags:
+        - Key: "Name"
+          Value: "LoadBalancerSecurityGroup"
+
+  # Security Group for API Gateway
+  ApiGatewaySecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Allow traffic from API Gateway to Load Balancer"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: "0.0.0.0/0"
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          CidrIp: "0.0.0.0/0"
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: "0.0.0.0/0"
+      Tags:
+        - Key: "Name"
+          Value: "ApiGatewaySecurityGroup"
+
+  # Security Group for ECS Tasks
+  ECSSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Allow traffic from Load Balancer to ECS Tasks"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: "0.0.0.0/0"
+      Tags:
+        - Key: "Name"
+          Value: "ECSSecurityGroup"
+
+  # Security Group for EC2 Instances
+  EC2SecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Allow traffic from Load Balancer to EC2 Instances"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
+        - IpProtocol: tcp
+          FromPort: 8000
+          ToPort: 8000
+          SourceSecurityGroupId: !GetAtt LoadBalancerSecurityGroup.GroupId
+      SecurityGroupEgress:
+        - IpProtocol: "-1"
+          CidrIp: "0.0.0.0/0"
+      Tags:
+        - Key: "Name"
+          Value: "EC2SecurityGroup"
+
+  # ECR Repository
+  ECRRepository:
+    Type: "AWS::ECR::Repository"
+    Properties:
+      RepositoryName: "app_repository"
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      Tags:
+        - Key: "Name"
+          Value: "appRepository"
+
+  # IAM Role for ECS Instance
+  ECSInstanceRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      RoleName: "ecsInstanceRole"
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "ec2.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      ManagedPolicyArns:
+        - "arn:aws:iam::aws:policy/service-role/AmazonEC2ContainerServiceforEC2Role"
+        - "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+        - "arn:aws:iam::aws:policy/CloudWatchLogsFullAccess"
+
+  # IAM Instance Profile for ECS Instance
+  ECSInstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      InstanceProfileName: "ecsInstanceProfile"
+      Roles:
+        - !Ref ECSInstanceRole
+  
+  # Launch Template for ECS Instance
+  ECSLaunchTemplate:
+    Type: "AWS::EC2::LaunchTemplate"
+    Properties:
+      LaunchTemplateName: "ecsLaunchTemplate"
+      LaunchTemplateData:
+        ImageId: "ami-09f63ae8e9b15e9b2"
+        InstanceType: "t2.micro"
+        Monitoring:
+          Enabled: true
+        TagSpecifications:
+          - ResourceType: "instance"
+            Tags:
+              - Key: "Name"
+                Value: "appInstance"
+        NetworkInterfaces:
+          - AssociatePublicIpAddress: false
+            DeleteOnTermination: true
+            DeviceIndex: 0
+            Groups:
+              - !GetAtt EC2SecurityGroup.GroupId
+        IamInstanceProfile:
+          Arn: !GetAtt ECSInstanceProfile.Arn
+        UserData: !Base64 |
+          #!/bin/bash
+          echo ECS_CLUSTER=appCluster >> /etc/ecs/ecs.config
+  
+  # ECS Auto Scaling Group
+  ECSAutoScalingGroup:
+    Type: "AWS::AutoScaling::AutoScalingGroup"
+    Properties:
+      AutoScalingGroupName: "ecsAutoScalingGroup"
+      LaunchTemplate:
+        LaunchTemplateId: !Ref ECSLaunchTemplate
+        Version: !GetAtt ECSLaunchTemplate.LatestVersionNumber
+      MinSize: 0
+      MaxSize: 10
+      HealthCheckType: "EC2"
+      AvailabilityZones:
+        - !Select [0, !GetAZs ""]
+      TerminationPolicies:
+        - Default
+      HealthCheckGracePeriod: 0
+      DesiredCapacity: 0
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnet
+      Tags:
+        - Key: "Name"
+          Value: "ecsAutoScalingGroup"
+          PropagateAtLaunch: true
+      ServiceLinkedRoleARN: !Sub "arn:aws:iam::${AWS::AccountId}:role/aws-service-role/autoscaling.amazonaws.com/AWSServiceRoleForAutoScaling"
+
+  # ECS Capacity Provider
+  ECSCapacityProvider:
+    Type: "AWS::ECS::CapacityProvider"
+    Properties:
+      Name: "appECSCapacityProvider"
+      AutoScalingGroupProvider:
+        AutoScalingGroupArn: !Ref ECSAutoScalingGroup
+        ManagedScaling:
+          Status: "ENABLED"
+          TargetCapacity: 100
+          MinimumScalingStepSize: 1
+          MaximumScalingStepSize: 10
+          InstanceWarmupPeriod: 300
+        ManagedTerminationProtection: "DISABLED"
+        ManagedDraining: ENABLED
+
+  # Target Groups for Load Balancer
+  FrontendTargetGroup:
+    Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+    Properties:
+      Name: "frontendTargetGroup"
+      Port: 80
+      Protocol: "TCP"
+      VpcId: !Ref VPC
+      TargetType: "instance"
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: "/"
+      HealthCheckPort: "80"
+      HealthCheckProtocol: "HTTP"
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  # Target Groups for Load Balancer
+  BackendTargetGroup:
+    Type: "AWS::ElasticLoadBalancingV2::TargetGroup"
+    Properties:
+      Name: "backendTargetGroup"
+      Port: 8000
+      Protocol: "TCP"
+      VpcId: !Ref VPC
+      TargetType: "instance"
+      HealthCheckEnabled: true
+      HealthCheckIntervalSeconds: 30
+      HealthCheckPath: "/status"
+      HealthCheckPort: "8000"
+      HealthCheckProtocol: "HTTP"
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 2
+      UnhealthyThresholdCount: 2
+
+  # Listeners for Load Balancer
+  FrontendListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref FrontendTargetGroup
+          Type: "forward"
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 80
+      Protocol: "TCP"
+
+  # Listeners for Load Balancer
+  BackendListener:
+    Type: "AWS::ElasticLoadBalancingV2::Listener"
+    Properties:
+      DefaultActions:
+        - TargetGroupArn: !Ref BackendTargetGroup
+          Type: "forward"
+      LoadBalancerArn: !Ref LoadBalancer
+      Port: 8000
+      Protocol: "TCP"
+
+  # Create a cluster to run the ECS tasks
+  ECSCluster:
+    Type: "AWS::ECS::Cluster"
+    Properties:
+      ClusterName: "appCluster"
+      CapacityProviders:
+        - !Ref ECSCapacityProvider
+      DefaultCapacityProviderStrategy:
+        - CapacityProvider: !Ref ECSCapacityProvider
+          Weight: 1
+          Base: 1
+
+  #EC2 ECS task definition
+  ECSTaskDefinition:
+    Type: "AWS::ECS::TaskDefinition"
+    Properties:
+      RequiresCompatibilities:
+        - "EC2"
+      ContainerDefinitions:
+        - Name: "appContainer"
+          Image: !GetAtt ECRRepository.RepositoryUri
+          PortMappings:
+            - ContainerPort: 8000
+              HostPort: 8000
+              Protocol: "tcp"
+            - ContainerPort: 80
+              HostPort: 80
+              Protocol: "tcp"
+          Essential: true
+          Memory: 512
+  
+  # ECS Service
+  ECSService:
+    Type: "AWS::ECS::Service"
+    Properties:
+      Cluster: !Ref ECSCluster
+      ServiceName: "appService"
+      TaskDefinition: !Ref ECSTaskDefinition
+      DesiredCount: 2
+      DeploymentConfiguration:
+        MaximumPercent: 100
+        MinimumHealthyPercent: 50
+      LoadBalancers:
+        - ContainerName: "appContainer"
+          ContainerPort: 8000
+          TargetGroupArn: !Ref BackendTargetGroup
+        - ContainerName: "appContainer"
+          ContainerPort: 80
+          TargetGroupArn: !Ref FrontendTargetGroup
+      SchedulingStrategy: "REPLICA"
+      DeploymentController:
+        Type: "ECS"
+      CapacityProviderStrategy:
+        - CapacityProvider: !Ref ECSCapacityProvider
+          Weight: 1
+      Tags:
+        - Key: "Name"
+          Value: "appService"
+        - Key: "LoadBalancer"
+          Value: !Ref LoadBalancer
+
+  # VPC link for REST API and attaching NLB to VPC
+  VpcLink:
+    Type: "AWS::ApiGateway::VpcLink"
+    Properties:
+      Name: "appVpcLink"
+      Description: "VPC Link for app"
+      TargetArns:
+        - !Ref LoadBalancer
+
+  # API Gateway
+  APIGateway:
+    Type: "AWS::ApiGateway::RestApi"
+    Properties:
+      Name: "appAPI"
+      Description: "app API"
+      FailOnWarnings: "true"
+      EndpointConfiguration:
+        Types:
+          - "REGIONAL"
+      Tags:
+        - Key: "Name"
+          Value: "appAPI"
+
+  # API Gateway Froneend Resources
+  APIGatewayResourceFronetnd:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: "frontend"
+
+  # API Gateway Backend Resources
+  APIGatewayResourceBackend:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !GetAtt APIGateway.RootResourceId
+      PathPart: "backend"
+
+  # API Gateway Proxy Resources
+  APIGatewayResourceBackendProxy:
+    Type: "AWS::ApiGateway::Resource"
+    Properties:
+      RestApiId: !Ref APIGateway
+      ParentId: !Ref APIGatewayResourceBackend
+      PathPart: "{proxy+}"
+
+  # API Gateway Method for Frontend
+  APIGatewayMethodFrontend:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIGatewayResourceFronetnd
+      HttpMethod: "GET"
+      AuthorizationType: "NONE"
+      Integration:
+        ConnectionType: "VPC_LINK"
+        ConnectionId: !Ref VpcLink
+        Type: "HTTP_PROXY"
+        IntegrationHttpMethod: "GET"
+        Uri: !Sub "http://${LoadBalancer.DNSName}:80"
+        IntegrationResponses:
+          - StatusCode: 200
+      MethodResponses:
+        - StatusCode: 200
+
+  # API Gateway Method for Backend
+  APIGatewayMethodBackend:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !Ref APIGatewayResourceBackendProxy
+      HttpMethod: "GET"
+      AuthorizationType: "NONE"
+      RequestParameters:
+        method.request.path.proxy: true
+      Integration:
+        ConnectionType: "VPC_LINK"
+        ConnectionId: !Ref VpcLink
+        Type: "HTTP_PROXY"
+        IntegrationHttpMethod: "GET"
+        Uri: !Sub "http://${LoadBalancer.DNSName}:8000/{proxy}"
+        RequestParameters:
+          integration.request.path.proxy: "method.request.path.proxy"
+        IntegrationResponses:
+          - StatusCode: 200
+      MethodResponses:
+        - StatusCode: 200
+
+  # API Gateway Deployment
+  APIGatewayDeployment:
+    Type: "AWS::ApiGateway::Deployment"
+    Properties:
+      RestApiId: !Ref APIGateway
+      StageName: "prod"
+    DependsOn: [APIGatewayMethodFrontend, APIGatewayMethodBackend]
+
+# Outputs
+Outputs:
+  VPCId:
+    Description: "VPC ID"
+    Value: !Ref VPC
+
+  PublicSubnetId:
+    Description: "Public Subnet ID"
+    Value: !Ref PublicSubnet
+
+  PrivateSubnetId:
+    Description: "Private Subnet ID"
+    Value: !Ref PrivateSubnet
+
+  LoadBalancerDNSName:
+    Description: "DNS name of the Load Balancer"
+    Value: !GetAtt LoadBalancer.DNSName
+
+  ECRRepositoryURI:
+    Description: "URI of the ECR Repository"
+    Value: !GetAtt ECRRepository.RepositoryUri
+
+  APIGatewayURL:
+    Description: "URL of the API Gateway"
+    Value: !Sub "https://${APIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/"
