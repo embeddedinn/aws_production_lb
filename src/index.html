@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Frontend</title>
+</head>
+
+<body>
+    <h1>Frontend</h1>
+    <p id="data"></p>
+
+    <script>
+        // Set the API host to wherever the page is loaded from
+        const api_host = `${window.location.origin}:8000/status`;
+
+        fetch(api_host)
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('data').innerText = "API STATUS: " + data.STATUS;
+            })
+            .catch(error => {
+                console.error('Error:', error);
+            });
+    </script>
+</body>
+</html>
