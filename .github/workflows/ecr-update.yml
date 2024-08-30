@@ -26,7 +26,7 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Download task definition
-        run: aws ecs describe-task-definition --task-definition App-Stack-ECSTaskDefinition-qs7o8zDgHdWF --query taskDefinition > task-definition.json
+        run: aws ecs describe-task-definition --task-definition App-Stack-ECSTaskDefinition-ycy3XxsfBDyU --query taskDefinition > task-definition.json
 
       - name: Build, tag, and push docker image to Amazon ECR
         id: build-image
