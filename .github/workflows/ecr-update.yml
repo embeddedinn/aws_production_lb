@@ -26,4 +26,33 @@ jobs:
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Download task definition
-        run: aws ecs describe-task-definition --task-definition App-Stack-ECSTaskDefinition-qs7o8zDgHdWF --query taskDefinition 
+        run: aws ecs describe-task-definition --task-definition App-Stack-ECSTaskDefinition-qs7o8zDgHdWF --query taskDefinition > task-definition.json
+
+      - name: Build, tag, and push docker image to Amazon ECR
+        id: build-image
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: app_repository
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          cd src
+          docker build -t $REGISTRY/$REPOSITORY:$IMAGE_TAG .
+          docker push $REGISTRY/$REPOSITORY:$IMAGE_TAG
+          echo "image=$REGISTRY/$REPOSITORY:$IMAGE_TAG" >> $GITHUB_OUTPUT
+
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: appContainer
+          image: ${{ steps.build-image.outputs.image }}
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: ${{ steps.task-def.outputs.task-definition }}
+          service: appService
+          cluster: appCluster
+          wait-for-service-stability: true
+          
