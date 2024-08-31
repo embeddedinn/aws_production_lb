@@ -417,6 +417,7 @@ Resources:
               Protocol: "tcp"
           Essential: true
           Memory: 512
+      Family: "appTaskDefinition"
   
   # ECS Service
   ECSService:
@@ -471,7 +472,7 @@ Resources:
         - Key: "Name"
           Value: "appAPI"
 
-  # API Gateway Froneend Resources
+  # API Gateway Frontend Resources
   APIGatewayResourceFronetnd:
     Type: "AWS::ApiGateway::Resource"
     Properties:
@@ -494,6 +495,25 @@ Resources:
       RestApiId: !Ref APIGateway
       ParentId: !Ref APIGatewayResourceBackend
       PathPart: "{proxy+}"
+
+  #Root get method to load the frontend page
+  APIGatewayMethodRoot:
+    Type: "AWS::ApiGateway::Method"
+    Properties:
+      RestApiId: !Ref APIGateway
+      ResourceId: !GetAtt APIGateway.RootResourceId
+      HttpMethod: "GET"
+      AuthorizationType: "NONE"
+      Integration:
+        ConnectionType: "VPC_LINK"
+        ConnectionId: !Ref VpcLink
+        Type: "HTTP_PROXY"
+        IntegrationHttpMethod: "GET"
+        Uri: !Sub "http://${LoadBalancer.DNSName}:80"
+        IntegrationResponses:
+          - StatusCode: 200
+      MethodResponses:
+        - StatusCode: 200
 
   # API Gateway Method for Frontend
   APIGatewayMethodFrontend:
@@ -545,6 +565,114 @@ Resources:
       StageName: "prod"
     DependsOn: [APIGatewayMethodFrontend, APIGatewayMethodBackend]
 
+  # IAM Role for GitHub
+  AppGithubRole:
+    Type: "AWS::IAM::Role"
+    Properties: 
+      RoleName: "appGithubRole"
+      AssumeRolePolicyDocument: 
+        Version: "2012-10-17"
+        Statement: 
+          - Effect: "Allow"
+            Principal: 
+              Federated: !GetAtt AppGithubOpenIDConnect.Arn
+            Action: 
+              - "sts:AssumeRoleWithWebIdentity"
+            Condition: 
+              StringEquals: 
+                # allow only a soecific GitHub account, repo and branch
+                token.actions.githubusercontent.com:sub: "repo:embeddedinn/aws_production_lb:ref:refs/heads/main" 
+                token.actions.githubusercontent.com:aud: "sts.amazonaws.com"
+      Policies:
+        - PolicyName: "AppGithubPolicy"
+          PolicyDocument: 
+            Version: "2012-10-17"
+            Statement:
+              - Sid: "ECSPermissions"
+                Effect: "Allow"
+                Action:
+                  - "ecs:UpdateCluster"
+                  - "ecs:ListAttributes"
+                  - "ecs:StartTask"
+                  - "ecs:DescribeTaskSets"
+                  - "ecs:UpdateService"
+                  - "ecs:CreateService"
+                  - "ecs:RunTask"                 
+                  - "ecs:StopTask"
+                  - "ecs:DescribeServices"
+                  - "ecs:DescribeTasks"
+                  - "ecs:UpdateTaskSet"
+                  - "ecs:GetTaskProtection"
+                  - "ecs:DeleteService"
+                  - "ecs:DescribeClusters"
+                  - "ecs:ListTagsForResource"
+                  - "ecs:ListContainerInstances"
+                  - "ecs:RegisterTaskDefinition"
+                  - "ecs:DescribeTaskDefinition"
+                Resource:
+                  - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:cluster/appCluster"
+                  - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-definition/appTaskDefinition/*"
+                  - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task/appCluster/*"
+                  - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:task-set/appCluster/*"
+                  - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:service/appCluster/*"
+                  - !Sub "arn:aws:ecs:${AWS::Region}:${AWS::AccountId}:container-instance/appCluster/*"
+                  
+              - Sid: "ECRPermissions"
+                Effect: "Allow"
+                Action:
+                  - "ecr:StartImageScan"
+                  - "ecr:DescribeImageReplicationStatus"
+                  - "ecr:ListTagsForResource"
+                  - "ecr:UploadLayerPart"
+                  - "ecr:BatchGetRepositoryScanningConfiguration"
+                  - "ecr:ListImages"
+                  - "ecr:TagResource"
+                  - "ecr:DescribeRepositories"
+                  - "ecr:CompleteLayerUpload"
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:GetLifecyclePolicy"
+                  - "ecr:PutLifecyclePolicy"
+                  - "ecr:DescribeImageScanFindings"
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:DeleteLifecyclePolicy"
+                  - "ecr:PutImage"
+                  - "ecr:UntagResource"
+                  - "ecr:BatchGetImage"
+                  - "ecr:DescribeImages"
+                  - "ecr:StartLifecyclePolicyPreview"
+                  - "ecr:InitiateLayerUpload"
+                Resource:
+                  - !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ECRRepository}"
+                  - !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ECRRepository}:image/*"
+
+              - Sid: "GithubActionsPermissions"
+                Effect: "Allow"
+                Action:
+                  - "ecr:GetAuthorizationToken"
+                  - "ecs:DescribeTaskDefinition"
+                Resource: "*"
+
+              - Sid: "VisualEditor3"
+                Effect: "Allow"
+                Action: 
+                  - "iam:PassRole"
+                Resource: 
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/ecsTaskExecutionRole"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/ecsServiceRole"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs-tasks.amazonaws.com/AWSServiceRoleForECSTasks"
+                  - !Sub "arn:aws:iam::${AWS::AccountId}:role/aws-service-role/ecs.amazonaws.com/AWSServiceRoleForECS"
+                  
+  
+  # OpenID Connect for GitHub
+  AppGithubOpenIDConnect:
+    Type: "AWS::IAM::OIDCProvider"
+    Properties: 
+      Url: "https://token.actions.githubusercontent.com"
+      ClientIdList: 
+        - sts.amazonaws.com # since we will be using the official GitHub actions
+
+
 # Outputs
 Outputs:
   VPCId:
@@ -570,3 +698,11 @@ Outputs:
   APIGatewayURL:
     Description: "URL of the API Gateway"
     Value: !Sub "https://${APIGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/"
+
+  AppGithubRoleARN:
+    Description: "ARN of the IAM Role for GitHub"
+    Value: !GetAtt AppGithubRole.Arn
+  
+  TaskDefinition:
+    Description: "ARN of the ECS Task Definition Name"
+    Value: !Ref ECSTaskDefinition
